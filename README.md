@@ -7,11 +7,11 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Status](https://img.shields.io/badge/status-design_phase-orange)
+![Status](https://img.shields.io/badge/status-phase_1_of_15_done-green)
 
 </div>
 
-> **Status: design phase.** The master blueprint (v2.0) is complete and reviewed. No implementation code exists yet. The CLI examples in this README show the planned v1.0 interface. See the [roadmap](#roadmap) for what gets built first.
+> **Status: early build, Phase 1 of 15 done.** The master blueprint (v2.0), the full documentation suite, and the installable package skeleton exist. The CLI installs and `clipforge doctor` reports the real media stack; the video splitting itself starts landing in Phase 2 onward. The CLI examples in this README show the planned v1.0 interface. See the [roadmap](#roadmap) for what gets built next.
 
 ---
 
