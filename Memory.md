@@ -63,16 +63,29 @@ next: what this unblocks or points at
 
 | Field | Value |
 |---|---|
-| Project state | Phase 1 (Foundation) done; Phases 2 to 15 remain |
-| Current phase | Phase 2 (Probe), not started |
-| Next action | Build `probe/ffprobe.py`, `metadata.py`, `compatibility.py` and wire `clipforge probe` (Phases.md, Phase 2 build table) |
-| Blockers | None. Open decisions D1 to D12 do not block Phase 2 |
-| Last session | 2026-11-14: completed Phase 1, including install, CLI, doctor, and tests (section 3) |
-| Coding session plan | Phases 2 and 3 next per Phases.md section 2, taken one phase at a time |
+| Project state | Phase 1 (Foundation) done; Phase 2 (Probe) done; Phases 3 to 15 remain |
+| Current phase | Phase 3 (Plan and dry-run), not started |
+| Next action | Build `planner/` module: boundaries, tail policy, feasibility; wire `--dry-run` into `split` (Phases.md, Phase 3 build table) |
+| Blockers | None. Open decisions D1 to D12 do not block Phase 3 |
+| Last session | 2026-11-18: completed Phase 2: ffprobe wrapper, ProbeData model, compatibility report, probe command with validation + rejections, 6 integration + 9 unit tests |
+| Coding session plan | Phase 3 next per Phases.md section 2 |
 
 ## 3. Completed work log
 
 Newest first.
+
+### 2026-11-18 · Phase 2, Probe
+
+what: built the probe subsystem per the Phase 2 build table:
+- `probe/ffprobe.py`: ffprobe wrapper using argument-list subprocess (RULE-05), filename defense with `--` (RULE-06), typed `FFprobeError` for every failure mode; `run_ffprobe()` returns parsed JSON format+streams
+- `probe/metadata.py`: `ProbeData` with `VideoStreamInfo` (30+ fields: resolution, pix_fmt, color triplet, both FPS as Fractions, VFR flag), `AudioStreamInfo` (sample_rate, channels, layout), `FormatInfo`; `normalize()` pure function for unit testing (RULE-34)
+- `probe/compatibility.py`: line-by-line verdicts (preserved/converted) for container, video, audio streams against fixed target codecs (libvpx-vp9, libopus, webm)
+- `cli/commands/probe.py`: validation checklist (FR-INP-03): exists, readable, parses, has video, duration known, quick integrity (frames/duration present); rejections for audio-only, directories, missing files with RULE-19 messages; `--json` output
+- tests: `tests/unit/test_metadata.py` (9 tests against recorded ffprobe JSON), `tests/integration/test_probe.py` (6 tests with lavfi-generated fixtures covering success, audio-only rejection, leading-dash/space filenames, nonexistent, directory, --json)
+
+evidence: pytest 32 passed; mypy strict 0 issues in 42 files; ruff clean; `clipforge probe` on real 1080p30 fixture prints full metadata + compatibility; audio-only refused with "no video stream" message; leading-dash and spaced filenames work; truncated fixture caught by quick integrity check (no frames/duration).
+
+next: Phase 3 (Plan and dry-run). The bpp feasibility line in compatibility report is deferred to Phase 3's `planner/feasibility.py`.
 
 ### 2026-11-14 · Phase 1 review and fixes
 
@@ -128,7 +141,7 @@ The done-when criteria for each phase live in Phases.md; this table is the state
 | Phase | Name | Status | Date |
 |---|---|---|---|
 | 1 | Foundation | done (2026-11-14) | 2026-11-14 |
-| 2 | Probe | not started | |
+| 2 | Probe | done (2026-11-18) | 2026-11-18 |
 | 3 | Plan and dry-run | not started | |
 | 4 | Encode engine | not started | |
 | 5 | MVP full run | not started | |
@@ -151,11 +164,11 @@ Blueprint milestone mapping (for cross-reference with the PRD): M0 is Phase 1; M
 
 | Field | Value |
 |---|---|
-| Claimed by | (nobody; Phase 1 claim finished 2026-11-14) |
-| Phase | next claim: Phase 2 (Probe) |
-| Files in flight | |
-| In-flight detail | |
-| Claimed at | |
+| Claimed by | GLM agent, session 2026-11-18 |
+| Phase | 2 (Probe) |
+| Files in flight | `src/clipforge/probe/{ffprobe,metadata,compatibility}.py`, `cli/commands/probe.py`, `tests/unit/test_metadata.py`, `tests/integration/test_probe.py` |
+| In-flight detail | Building per the Phase 2 build table: ffprobe wrapper (arg-list, RULE-06), ProbeData model, compatibility report, probe command with validation + rejections, unit + integration tests |
+| Claimed at | 2026-11-18 |
 
 ## 6. Decisions log
 
@@ -212,8 +225,8 @@ Append-only. One entry per lesson, written for the session that has not lived it
 | `Memory.md` | This file: cross-session state | living | 2026-11-14 |
 | `LICENSE` | GPL-3.0 | complete | 2026-11-12 |
 | `pyproject.toml` | Packaging and tool config: deps, console script, ruff, mypy, pytest | complete | 2026-11-14 |
-| `src/clipforge/**` | All source code: skeleton with constants, errors, config, CLI (doctor and info real, 14 stubs) | Phase 1 done; modules grow phase by phase | 2026-11-14 |
-| `tests/**` | Test suite: `tests/unit/test_config.py`, `tests/unit/test_doctor.py` | Phase 1 done; grows phase by phase | 2026-11-14 |
+| `src/clipforge/**` | All source code: skeleton + constants, errors, config, CLI (doctor/info real, 14 stubs), probe (ffprobe, metadata, compatibility) | Phases 1-2 done; modules grow phase by phase | 2026-11-18 |
+| `tests/**` | Test suite: `test_config.py`, `test_doctor.py`, `test_metadata.py`, `test_probe.py` | Phases 1-2 done; grows phase by phase | 2026-11-18 |
 | `.venv/` | Local virtualenv, Python 3.14, editable install (gitignored) | active | 2026-11-14 |
 
 ## 10. Open questions
