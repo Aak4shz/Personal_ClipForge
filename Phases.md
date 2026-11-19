@@ -574,11 +574,12 @@ Keep a running log at the bottom of this file: phase number, date, what passed, 
 
 ---
 
-**Current status:** Phase 1 done 2026-11-14. Next action: Phase 2, Probe.
+**Current status:** Phase 2 done 2026-11-18. Next action: Phase 3, Plan and dry-run.
 
 | Phase | Date | Result | Notes |
 |---|---|---|---|
 | 1 | 2026-11-14 | done | `pip install -e ".[dev]"` on Python 3.14; 16 commands registered (doctor and info real, 14 stubs exit 2); doctor truthful on the real stack, libvmaf reported optional and absent; 16 unit tests pass; mypy strict and ruff clean |
+| 2 | 2026-11-18 | done | ffprobe wrapper (arg-list, RULE-05/06), ProbeData model (30+ video fields, Fractions for FPS), compatibility report (preserved/converted verdicts), probe command with FR-INP-03 validation + rejections; 15 tests (9 unit + 6 integration with lavfi fixtures); mypy strict, ruff clean |
 | 2 | - | not started | |
 | 3 | - | not started | |
 | 4 | - | not started | |
