@@ -574,15 +574,15 @@ Keep a running log at the bottom of this file: phase number, date, what passed, 
 
 ---
 
-**Current status:** Phase 3 done 2026-11-19. Next action: Phase 4, Encode engine.
+**Current status:** Phase 5 done 2026-11-20. Next action: Phase 6, Smart size control.
 
 | Phase | Date | Result | Notes |
 |---|---|---|---|
 | 1 | 2026-11-14 | done | `pip install -e ".[dev]"` on Python 3.14; 16 commands registered (doctor and info real, 14 stubs exit 2); doctor truthful on the real stack, libvmaf reported optional and absent; 16 unit tests pass; mypy strict and ruff clean |
 | 2 | 2026-11-18 | done | ffprobe wrapper (arg-list, RULE-05/06), ProbeData model (30+ video fields, Fractions for FPS), compatibility report (preserved/converted verdicts), probe command with FR-INP-03 validation + rejections; 15 tests (9 unit + 6 integration with lavfi fixtures); mypy strict, ruff clean |
 | 3 | 2026-11-19 | done | Boundaries (µs, half-open [start, end)), tail policy (merge/drop/keep, no 0.2s orphan on 600.2s), budget math (3,984,589 B target, stereo 64k -> 3,123,671 bps video reproduced exactly), bpp feasibility (comfortable/tight/risky), split --dry-run CLI command with rich tables, --start/--end range constraints, --json export; 58 new tests (total 89 passing); mypy strict, ruff clean |
-| 4 | - | not started | |
-| 5 | - | not started | |
+| 4 | 2026-11-20 | done | Profiles (fast/balanced/best), command builder, runner with watchdog and kill ladder (SIGTERM then SIGKILL), progress parser, post-encode verification (container, codecs, duration, size); 27 tests; mypy strict, ruff clean |
+| 5 | 2026-11-20 | done | MVP full run: in-memory scheduler (plan -> budget -> builder -> runner -> verify -> publish), atomic publish (fsync + os.replace), size loop with 3% floor recalculation and RULE-15 caps, clip_0001.webm 4-digit sorted layout; real split command wired with exit codes (0/1/4/130); 130 tests pass; mypy strict, ruff clean |
 | 6 | - | not started | |
 | 7 | - | not started | |
 | 8 | - | not started | |
