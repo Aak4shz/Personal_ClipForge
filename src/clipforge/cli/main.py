@@ -7,6 +7,10 @@ code from the documented table (FR-CLI-02).
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Callable
+from typing import Any
+
 import typer
 
 from clipforge import __version__
@@ -46,6 +50,27 @@ app = typer.Typer(
 )
 
 
+def _wrap_command(cmd_func: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a command function to catch ClipForgeError and map to exit codes.
+
+    This works both for direct app() calls (tests via CliRunner) and
+    for the run() wrapper (production).
+    """
+
+    @functools.wraps(cmd_func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return cmd_func(*args, **kwargs)
+        except ClipForgeError as error:
+            _render_error(error)
+            raise typer.Exit(code=_exit_code_for(error)) from None
+        except KeyboardInterrupt:
+            typer.echo("interrupted", err=True)
+            raise typer.Exit(code=ExitCode.INTERRUPTED.value) from None
+
+    return wrapper
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"clipforge {__version__}")
@@ -65,28 +90,50 @@ def main(
     """ClipForge: offline splitting into size-capped, verified WebM clips."""
 
 
-# Registration order follows FR-CLI-01
-app.command("info", help="Version and environment information.")(info.run)
+# Registration order follows FR-CLI-01; wrap each command for exception handling
+app.command("info", help="Version and environment information.")(_wrap_command(info.run))
 app.command("doctor", help="Check the installed media stack and report what it supports.")(
-    doctor.run
+    _wrap_command(doctor.run)
 )
-app.command("probe", help="Show input metadata and compatibility. Lands in Phase 2.")(probe.run)
-app.command("split", help="Plan or run a split into capped clips. Lands in Phase 3.")(split.run)
-app.command("batch", help="Split many videos in one run. Lands in Phase 12.")(batch.run)
-app.command("queue", help="List, pause, and order jobs. Lands in Phase 12.")(queue.run)
-app.command("status", help="Show job and clip states. Lands in Phase 8.")(status.run)
-app.command("resume", help="Continue an interrupted job. Lands in Phase 9.")(resume.run)
-app.command("retry", help="Re-run failed or review clips. Lands in Phase 11.")(retry.run)
-app.command("reprocess", help="Re-encode selected clips. Lands in Phase 11.")(reprocess.run)
-app.command("verify", help="Check a finished job against disk. Lands in Phase 11.")(verify.run)
-app.command("cancel", help="Cancel a paused or interrupted job. Lands in Phase 11.")(cancel.run)
-app.command("report", help="Print or export a job report. Lands in Phase 11.")(report.run)
-app.command("config", help="Show and validate configuration. Lands in Phase 11.")(config.run)
+app.command("probe", help="Show input metadata and compatibility. Lands in Phase 2.")(
+    _wrap_command(probe.run)
+)
+app.command("split", help="Plan or run a split into capped clips. Lands in Phase 3.")(
+    _wrap_command(split.run)
+)
+app.command("batch", help="Split many videos in one run. Lands in Phase 12.")(
+    _wrap_command(batch.run)
+)
+app.command("queue", help="List, pause, and order jobs. Lands in Phase 12.")(
+    _wrap_command(queue.run)
+)
+app.command("status", help="Show job and clip states. Lands in Phase 8.")(_wrap_command(status.run))
+app.command("resume", help="Continue an interrupted job. Lands in Phase 9.")(
+    _wrap_command(resume.run)
+)
+app.command("retry", help="Re-run failed or review clips. Lands in Phase 11.")(
+    _wrap_command(retry.run)
+)
+app.command("reprocess", help="Re-encode selected clips. Lands in Phase 11.")(
+    _wrap_command(reprocess.run)
+)
+app.command("verify", help="Check a finished job against disk. Lands in Phase 11.")(
+    _wrap_command(verify.run)
+)
+app.command("cancel", help="Cancel a paused or interrupted job. Lands in Phase 11.")(
+    _wrap_command(cancel.run)
+)
+app.command("report", help="Print or export a job report. Lands in Phase 11.")(
+    _wrap_command(report.run)
+)
+app.command("config", help="Show and validate configuration. Lands in Phase 11.")(
+    _wrap_command(config.run)
+)
 app.command(
     "benchmark",
     help="Measure profiles and thread counts on this machine. Lands in Phase 13.",
-)(benchmark.run)
-app.command("clean", help="Remove orphan .part files. Lands in Phase 11.")(clean.run)
+)(_wrap_command(benchmark.run))
+app.command("clean", help="Remove orphan .part files. Lands in Phase 11.")(_wrap_command(clean.run))
 
 # Uncaught per-clip outcomes mean the run ended with issues, not that it crashed
 _EXIT_CODES: tuple[tuple[type[ClipForgeError], int], ...] = (
