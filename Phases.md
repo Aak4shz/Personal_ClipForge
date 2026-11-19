@@ -574,7 +574,7 @@ Keep a running log at the bottom of this file: phase number, date, what passed, 
 
 ---
 
-**Current status:** Phase 5 done 2026-11-20. Next action: Phase 6, Smart size control.
+**Current status:** Phase 6 done 2026-11-22. Next action: Phase 7, Quality gates and ladder.
 
 | Phase | Date | Result | Notes |
 |---|---|---|---|
@@ -583,7 +583,7 @@ Keep a running log at the bottom of this file: phase number, date, what passed, 
 | 3 | 2026-11-19 | done | Boundaries (µs, half-open [start, end)), tail policy (merge/drop/keep, no 0.2s orphan on 600.2s), budget math (3,984,589 B target, stereo 64k -> 3,123,671 bps video reproduced exactly), bpp feasibility (comfortable/tight/risky), split --dry-run CLI command with rich tables, --start/--end range constraints, --json export; 58 new tests (total 89 passing); mypy strict, ruff clean |
 | 4 | 2026-11-20 | done | Profiles (fast/balanced/best), command builder, runner with watchdog and kill ladder (SIGTERM then SIGKILL), progress parser, post-encode verification (container, codecs, duration, size); 27 tests; mypy strict, ruff clean |
 | 5 | 2026-11-20 | done | MVP full run: in-memory scheduler (plan -> budget -> builder -> runner -> verify -> publish), atomic publish (fsync + os.replace), size loop with 3% floor recalculation and RULE-15 caps, clip_0001.webm 4-digit sorted layout; real split command wired with exit codes (0/1/4/130); 130 tests pass; mypy strict, ruff clean |
-| 6 | - | not started | |
+| 6 | 2026-11-22 | done | Smart size control: CQ mode with starting CRF (resolution x bpp class, capped at crf_max), size loop with two-pass rate control fallback after 2 oversize results (pass 1 analysis + pass 2 encode counted against 8-encode cap), under-use hook, passlog cleanup; 8 new tests (138 total passing); mypy strict, ruff clean |
 | 7 | - | not started | |
 | 8 | - | not started | |
 | 9 | - | not started | |
