@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from clipforge.core.config import ClipForgeConfig
+from clipforge.core.config import ClipForgeConfig, OptimizerConfig
 from clipforge.core.constants import ClipState, JobState
 from clipforge.encoding.runner import EncodeResult
 from clipforge.encoding.verify import ClipVerification
@@ -137,8 +137,172 @@ def test_run_job_oversize_retry_and_exhaustion(tmp_path: Path) -> None:
     clip_res = result.clip_results[0]
     assert clip_res.state == ClipState.FAILED_SIZE
     assert clip_res.size_attempts == config.optimizer.size_attempts
+    # Consumed 6 total encodes (1-pass, 1-pass, two-pass [2 runs], two-pass [2 runs])
+    assert clip_res.total_encodes == 6
+    assert clip_res.two_pass is True
     # No oversize file published
     assert not (output_dir / "clip_0001.webm").exists()
+
+
+def test_run_job_two_pass_promotion_and_success(tmp_path: Path) -> None:
+    plan, probe = _make_dummy_plan(tmp_path, clip_count=1)
+    output_dir = tmp_path / "output_twopass_success"
+    config = ClipForgeConfig()
+
+    calls: list[list[str]] = []
+
+    def mock_run_encode(
+        cmd: list[str], output_part_path: Path, **kwargs: Any
+    ) -> EncodeResult:
+        calls.append(cmd)
+        # Create a dummy passlog file during pass 1 if passlogfile is specified
+        if "-passlogfile" in cmd:
+            log_idx = cmd.index("-passlogfile") + 1
+            log_file = Path(f"{cmd[log_idx]}-0.log")
+            log_file.write_text("dummy-passlog")
+
+        # First 2 attempts: 1-pass oversize (5 MB)
+        # 3rd attempt: pass 1 analysis (size 0)
+        # 4th attempt: pass 2 encode (3 MB, within limit)
+        if kwargs.get("is_analysis_pass"):
+            return EncodeResult(
+                success=True,
+                exit_code=0,
+                output_path=output_part_path,
+                size_bytes=0,
+                duration_seconds=10.0,
+                is_timeout=False,
+                stderr_tail="",
+            )
+
+        size = 5_000_000 if len(calls) <= 2 else 3_000_000
+        output_part_path.write_bytes(b"x" * size)
+        return EncodeResult(
+            success=True,
+            exit_code=0,
+            output_path=output_part_path,
+            size_bytes=size,
+            duration_seconds=10.0,
+            is_timeout=False,
+            stderr_tail="",
+        )
+
+    def mock_verify_clip(clip_path: Path, **kwargs: Any) -> ClipVerification:
+        return ClipVerification(
+            path=clip_path,
+            valid=True,
+            size_bytes=clip_path.stat().st_size,
+            is_oversize=False,
+            format_name="webm",
+            video_codec="vp9",
+            audio_codec="opus",
+            duration_seconds=10.0,
+            errors=[],
+        )
+
+    with (
+        patch("clipforge.manager.scheduler.run_encode", side_effect=mock_run_encode),
+        patch("clipforge.manager.scheduler.verify_clip", side_effect=mock_verify_clip),
+    ):
+        result = run_job(plan, probe, config, output_dir)
+
+    assert result.state == JobState.COMPLETED
+    assert result.completed_clips == 1
+    clip_res = result.clip_results[0]
+    assert clip_res.state == ClipState.COMPLETED
+    assert clip_res.two_pass is True
+    assert clip_res.size_attempts == 2
+    assert clip_res.total_encodes == 4  # 1-pass + 1-pass + pass1 + pass2
+    assert clip_res.size_bytes == 3_000_000
+
+    # Verify pass flags in calls
+    assert "-pass" not in calls[0]
+    assert "-pass" not in calls[1]
+    assert calls[2][calls[2].index("-pass") + 1] == "1"
+    assert calls[3][calls[3].index("-pass") + 1] == "2"
+
+    # Verify passlogs were cleaned up (no leftover log files in tmp)
+    assert not any(output_dir.glob(".clipforge_tmp/*_passlog*"))
+    assert (output_dir / "clip_0001.webm").exists()
+
+
+def test_run_job_max_total_encodes_exhaustion(tmp_path: Path) -> None:
+    plan, probe = _make_dummy_plan(tmp_path, clip_count=1)
+    output_dir = tmp_path / "output_limit_exhaust"
+    # Set max_total_encodes to 3
+    config = ClipForgeConfig(optimizer=OptimizerConfig(max_total_encodes=3, size_attempts=4))
+
+    def mock_run_encode(
+        cmd: list[str], output_part_path: Path, **kwargs: Any
+    ) -> EncodeResult:
+        # Always oversize
+        output_part_path.write_bytes(b"x" * 5_000_000)
+        return EncodeResult(
+            success=True,
+            exit_code=0,
+            output_path=output_part_path,
+            size_bytes=5_000_000,
+            duration_seconds=10.0,
+            is_timeout=False,
+            stderr_tail="",
+        )
+
+    with patch("clipforge.manager.scheduler.run_encode", side_effect=mock_run_encode):
+        result = run_job(plan, probe, config, output_dir)
+
+    assert result.state == JobState.FAILED
+    clip_res = result.clip_results[0]
+    assert clip_res.state == ClipState.FAILED_LIMIT
+    assert clip_res.total_encodes == 3
+    assert "exceeded maximum total encodes" in (clip_res.error_message or "")
+
+
+def test_run_job_starting_crf_applied(tmp_path: Path) -> None:
+    plan, probe = _make_dummy_plan(tmp_path, clip_count=1)
+    output_dir = tmp_path / "output_crf"
+    config = ClipForgeConfig(optimizer=OptimizerConfig(crf_start=25, crf_max=40))
+
+    observed_crf: list[str] = []
+
+    def mock_run_encode(
+        cmd: list[str], output_part_path: Path, **kwargs: Any
+    ) -> EncodeResult:
+        crf_val = cmd[cmd.index("-crf") + 1]
+        observed_crf.append(crf_val)
+        output_part_path.write_bytes(b"x" * 100)
+        return EncodeResult(
+            success=True,
+            exit_code=0,
+            output_path=output_part_path,
+            size_bytes=100,
+            duration_seconds=10.0,
+            is_timeout=False,
+            stderr_tail="",
+        )
+
+    def mock_verify_clip(clip_path: Path, **kwargs: Any) -> ClipVerification:
+        return ClipVerification(
+            path=clip_path,
+            valid=True,
+            size_bytes=100,
+            is_oversize=False,
+            format_name="webm",
+            video_codec="vp9",
+            audio_codec="opus",
+            duration_seconds=10.0,
+            errors=[],
+        )
+
+    with (
+        patch("clipforge.manager.scheduler.run_encode", side_effect=mock_run_encode),
+        patch("clipforge.manager.scheduler.verify_clip", side_effect=mock_verify_clip),
+    ):
+        result = run_job(plan, probe, config, output_dir)
+
+    assert result.state == JobState.COMPLETED
+    assert observed_crf == ["25"]
+    assert result.clip_results[0].crf == 25
+
 
 
 def test_run_job_keyboard_interrupt_cleanup(tmp_path: Path) -> None:
