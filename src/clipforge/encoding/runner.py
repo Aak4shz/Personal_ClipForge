@@ -61,6 +61,7 @@ def run_encode(
     timeout_factor: float = 20.0,
     timeout: float | None = None,
     on_progress: Callable[[ProgressFrame], None] | None = None,
+    is_analysis_pass: bool = False,
 ) -> EncodeResult:
     """Execute FFmpeg command under watchdog supervision with kill ladder.
 
@@ -71,6 +72,7 @@ def run_encode(
         timeout_factor: Factor for watchdog timeout = max(60s, duration * factor).
         timeout: Explicit timeout in seconds (overrides timeout_factor if given).
         on_progress: Optional callback invoked whenever a progress frame is parsed.
+        is_analysis_pass: If True, command writes to null and does not produce output_part_path.
 
     Returns:
         Structured EncodeResult. If encode fails or times out, output .part file is removed.
@@ -80,7 +82,8 @@ def run_encode(
     )
 
     # Ensure parent directory for .part file exists
-    output_part_path.parent.mkdir(parents=True, exist_ok=True)
+    if not is_analysis_pass:
+        output_part_path.parent.mkdir(parents=True, exist_ok=True)
 
     start_time = time.monotonic()
     is_timeout = False
@@ -145,14 +148,18 @@ def run_encode(
     last_prog = last_frames[-1] if last_frames else None
 
     # Check output file status
-    file_exists = output_part_path.exists()
-    size_bytes = output_part_path.stat().st_size if file_exists else 0
-    success = (exit_code == 0) and not is_timeout and file_exists and (size_bytes > 0)
-
-    # Clean up .part file on any failure (ARCHITECTURE.md 4.5)
-    if not success and file_exists:
-        output_part_path.unlink(missing_ok=True)
+    if is_analysis_pass:
         size_bytes = 0
+        success = (exit_code == 0) and not is_timeout
+    else:
+        file_exists = output_part_path.exists()
+        size_bytes = output_part_path.stat().st_size if file_exists else 0
+        success = (exit_code == 0) and not is_timeout and file_exists and (size_bytes > 0)
+
+        # Clean up .part file on any failure (ARCHITECTURE.md 4.5)
+        if not success and file_exists:
+            output_part_path.unlink(missing_ok=True)
+            size_bytes = 0
 
     return EncodeResult(
         output_path=output_part_path,
