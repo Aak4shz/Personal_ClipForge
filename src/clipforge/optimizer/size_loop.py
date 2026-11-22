@@ -58,3 +58,43 @@ def can_retry_size(
 ) -> bool:
     """Check if another size retry is permitted under RULE-15 caps."""
     return size_attempts < max_size_attempts and total_encodes < max_total_encodes
+
+
+def should_promote_two_pass(
+    size_attempts: int,
+    two_pass_fallback: bool = True,
+) -> bool:
+    """Check if clip should be promoted to two-pass rate control (FR-OPT-07).
+
+    A clip is promoted after two oversize results (size_attempts >= 2).
+    """
+    return two_pass_fallback and size_attempts >= 2
+
+
+def check_underuse(
+    actual_size_bytes: int,
+    target_size_bytes: int = TARGET_CLIP_SIZE_BYTES,
+    quality_passed: bool = True,
+    underuse_ratio: float = 0.75,
+    underuse_attempts: int = 0,
+    max_underuse_attempts: int = 1,
+) -> bool:
+    """Return True if output is far below budget and failed quality gate (FR-OPT-11).
+
+    Output far below budget that still fails its quality gate earns one attempt
+    at a lower CRF.
+    """
+    if quality_passed:
+        return False
+    if underuse_attempts >= max_underuse_attempts:
+        return False
+    return actual_size_bytes < int(target_size_bytes * underuse_ratio)
+
+
+def adjust_crf_for_underuse(
+    current_crf: int,
+    crf_step: int = 4,
+    crf_min: int = 15,
+) -> int:
+    """Lower CRF to improve quality when under-use occurs (FR-OPT-11)."""
+    return max(crf_min, current_crf - crf_step)
