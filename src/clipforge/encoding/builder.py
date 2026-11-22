@@ -138,7 +138,7 @@ def build_encode_command(
 
     # Pass 1 skips audio and writes null output
     if pass_number == 1:
-        cmd.extend(["-an", "-f", "null", "/dev/null"])
+        cmd.extend(["-progress", "pipe:1", "-an", "-f", "null", "/dev/null"])
         return cmd
 
     # Audio handling for final or single-pass encode
