@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from clipforge.core.constants import TARGET_CLIP_SIZE_BYTES
 
@@ -23,6 +24,37 @@ def default_audio_bitrate_bps(channels: int | None) -> int:
     return 224_000
 
 
+def select_starting_crf(
+    height: int = 1080,
+    feasibility_class: str = "comfortable",
+    crf_start: int | Literal["auto"] = "auto",
+    crf_max: int = 45,
+) -> int:
+    """Select starting CRF based on resolution and bpp feasibility class (FR-OPT-05).
+
+    Args:
+        height: Frame height in pixels.
+        feasibility_class: 'comfortable', 'tight', or 'risky'.
+        crf_start: Explicit starting CRF or 'auto'.
+        crf_max: Hard ceiling on CRF value (default 45).
+
+    Returns:
+        Starting CRF clamped to crf_max.
+    """
+    if isinstance(crf_start, int):
+        return min(max(0, crf_start), crf_max)
+
+    if height <= 720:
+        crf_map = {"comfortable": 30, "tight": 32, "risky": 36}
+    elif height <= 1080:
+        crf_map = {"comfortable": 31, "tight": 33, "risky": 37}
+    else:
+        crf_map = {"comfortable": 32, "tight": 36, "risky": 40}
+
+    chosen = crf_map.get(feasibility_class, 32)
+    return min(chosen, crf_max)
+
+
 @dataclass(frozen=True)
 class ClipBudget:
     """Bitrate and byte budget for one clip."""
@@ -32,6 +64,7 @@ class ClipBudget:
     audio_bytes: int
     video_bps: int
     duration_us: int
+    crf: int = 32
 
     @property
     def video_kbps(self) -> float:
@@ -46,16 +79,26 @@ def calculate_budget(
     duration_us: int,
     audio_bps: int = 64_000,
     target_bytes: int = TARGET_CLIP_SIZE_BYTES,
+    height: int = 1080,
+    feasibility_class: str = "comfortable",
+    crf_start: int | Literal["auto"] = "auto",
+    crf_max: int = 45,
 ) -> ClipBudget:
-    """Derive video bitrate from byte budget with audio subtracted first (FR-OPT-02, FR-OPT-03).
+    """Derive video bitrate and starting CRF from byte budget (FR-OPT-02, 03, 05).
+
+    Audio is subtracted first, then video bitrate and starting CRF are calculated.
 
     Args:
         duration_us: Clip duration in integer microseconds.
         audio_bps: Audio bitrate in bits per second (0 if no audio).
         target_bytes: Byte limit target (default 3,984,589 bytes).
+        height: Display height for starting CRF determination.
+        feasibility_class: 'comfortable', 'tight', or 'risky'.
+        crf_start: Configured starting CRF or 'auto'.
+        crf_max: Maximum allowed CRF value.
 
     Returns:
-        ClipBudget instance with exact byte and bitrate numbers.
+        ClipBudget instance with exact byte, bitrate, and CRF numbers.
 
     Raises:
         ValueError: If duration_us <= 0 or audio bytes exceed target bytes.
@@ -76,10 +119,18 @@ def calculate_budget(
     # video_bps = remaining_bytes * 8 / duration_seconds
     video_bps = (remaining_bytes * 8 * 1_000_000) // duration_us
 
+    crf = select_starting_crf(
+        height=height,
+        feasibility_class=feasibility_class,
+        crf_start=crf_start,
+        crf_max=crf_max,
+    )
+
     return ClipBudget(
         target_bytes=target_bytes,
         audio_bps=audio_bps,
         audio_bytes=audio_bytes,
         video_bps=video_bps,
         duration_us=duration_us,
+        crf=crf,
     )
