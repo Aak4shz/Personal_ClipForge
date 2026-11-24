@@ -7,7 +7,7 @@
 | **Maintainer** | Whoever is working: Aakash or any agent |
 | **Repo** | `/home/aakash/Code/Personal_ClipForge` |
 | **Remote** | `https://github.com/Aak4shz/Personal_ClipForge.git` |
-| **Last updated** | 2026-11-14 |
+| **Last updated** | 2026-11-25 |
 
 **Start every session on this project by reading this file.** It is the fastest map of where things stand, and it is written to be read by the next session, the next model, or the next agent with no other context. Everything here is kept current on purpose; trust it, and keep it that way by updating it as you work.
 
@@ -63,12 +63,12 @@ next: what this unblocks or points at
 
 | Field | Value |
 |---|---|
-| Project state | Phase 1 (Foundation) done; Phase 2 (Probe) done; Phase 3 (Plan and dry-run) done; Phase 4 (Encode engine) done; Phase 5 (MVP full run) done; Phase 6 (Smart size control) done; Phase 7 (Quality gates and ladder) done |
-| Current phase | Phase 8 (Persistence), not started |
-| Next action | Build `storage/` module: database, schema, repository, manifest (Phases.md, Phase 8 build table) |
+| Project state | Phase 1 (Foundation) done; Phase 2 (Probe) done; Phase 3 (Plan and dry-run) done; Phase 4 (Encode engine) done; Phase 5 (MVP full run) done; Phase 6 (Smart size control) done; Phase 7 (Quality gates and ladder) done; Phase 8 (Persistence) done |
+| Current phase | Phase 8 (Persistence), done |
+| Next action | Phase 9 (Resume and recovery): graceful interrupt, resume command, locks, disk guards |
 | Blockers | None |
-| Last session | 2026-11-25: completed Phase 7: Tier 0/1/2 quality gates, degradation ladder, under-use recovery, NEEDS_REVIEW, CLI options --on-oversize/--quality-metric/--quality-sample; 26 new tests, 164 total passing; mypy strict, ruff clean |
-| Coding session plan | Phase 8 next per Phases.md section 2 |
+| Last session | 2026-11-25: completed Phase 8: SQLite WAL storage (db.py), schema versioning via PRAGMA user_version (schema.py), repository layer (repo.py) with jobs/clips/attempts/events, state machine validation in core/constants.py, scheduler rewrite to database-backed run_job with RULE-22 transaction rule, manifest.json written atomically after every clip, crash recovery via reset_in_flight_clips; 9 new persistence integration tests, 173 total passing; mypy strict, ruff clean |
+| Coding session plan | Phase 9: resume and recovery |
 
 ## 3. Completed work log
 
@@ -177,11 +177,11 @@ Blueprint milestone mapping (for cross-reference with the PRD): M0 is Phase 1; M
 
 | Field | Value |
 |---|---|
-| Claimed by | GLM agent, session 2026-11-18 |
-| Phase | 2 (Probe) |
-| Files in flight | `src/clipforge/probe/{ffprobe,metadata,compatibility}.py`, `cli/commands/probe.py`, `tests/unit/test_metadata.py`, `tests/integration/test_probe.py` |
-| In-flight detail | Building per the Phase 2 build table: ffprobe wrapper (arg-list, RULE-06), ProbeData model, compatibility report, probe command with validation + rejections, unit + integration tests |
-| Claimed at | 2026-11-18 |
+| Claimed by | (none) |
+| Phase | 8 (Persistence) |
+| Files in flight | none |
+| In-flight detail | Phase 8 complete and verified; cleared for Phase 9 |
+| Claimed at | 2026-11-25 |
 
 ## 6. Decisions log
 
