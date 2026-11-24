@@ -125,7 +125,7 @@ def test_should_promote_two_pass() -> None:
 
 def test_underuse_check_and_crf_adjustment() -> None:
     target = TARGET_CLIP_SIZE_BYTES  # ~3.98 MB
-    small_size = int(target * 0.5)   # 50% of budget
+    small_size = int(target * 0.5)  # 50% of budget
 
     # Quality passed -> no underuse retry
     assert check_underuse(small_size, target, quality_passed=True) is False
@@ -149,4 +149,3 @@ def test_underuse_check_and_crf_adjustment() -> None:
     assert adjust_crf_for_underuse(current_crf=32, crf_step=4) == 28
     # Does not drop below crf_min
     assert adjust_crf_for_underuse(current_crf=16, crf_step=4, crf_min=15) == 15
-
