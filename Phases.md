@@ -574,7 +574,7 @@ Keep a running log at the bottom of this file: phase number, date, what passed, 
 
 ---
 
-**Current status:** Phase 6 done 2026-11-22. Next action: Phase 7, Quality gates and ladder.
+**Current status:** Phase 7 done 2026-11-25. Next action: Phase 8, Persistence.
 
 | Phase | Date | Result | Notes |
 |---|---|---|---|
@@ -584,7 +584,7 @@ Keep a running log at the bottom of this file: phase number, date, what passed, 
 | 4 | 2026-11-20 | done | Profiles (fast/balanced/best), command builder, runner with watchdog and kill ladder (SIGTERM then SIGKILL), progress parser, post-encode verification (container, codecs, duration, size); 27 tests; mypy strict, ruff clean |
 | 5 | 2026-11-20 | done | MVP full run: in-memory scheduler (plan -> budget -> builder -> runner -> verify -> publish), atomic publish (fsync + os.replace), size loop with 3% floor recalculation and RULE-15 caps, clip_0001.webm 4-digit sorted layout; real split command wired with exit codes (0/1/4/130); 130 tests pass; mypy strict, ruff clean |
 | 6 | 2026-11-22 | done | Smart size control: CQ mode with starting CRF (resolution x bpp class, capped at crf_max), size loop with two-pass rate control fallback after 2 oversize results (pass 1 analysis + pass 2 encode counted against 8-encode cap), under-use hook, passlog cleanup; 8 new tests (138 total passing); mypy strict, ruff clean |
-| 7 | - | not started | |
+| 7 | 2026-11-25 | done | Quality gates and ladder: Tier 0 verification (WebM/VP9/Opus, resolution, duration within 1-frame tolerance), Tier 1 SSIM/PSNR filter passes with sampling (--quality-sample), Tier 2 VMAF with fallback, degradation ladder (--on-oversize fail/fps/downscale/both) halving >=48 fps or downscaling preserving aspect, under-use recovery at crf-4, NEEDS_REVIEW marking without file deletion (RULE-45/74) with COMPLETED_WITH_ISSUES exit 1; 26 new tests (164 total passing); mypy strict, ruff clean |
 | 8 | - | not started | |
 | 9 | - | not started | |
 | 10 | - | not started | |
