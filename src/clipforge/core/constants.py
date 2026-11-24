@@ -83,3 +83,104 @@ JOB_TERMINAL_STATES: frozenset[JobState] = frozenset(
         JobState.FAILED,
     }
 )
+
+
+# Allowed clip state transitions: current -> set of allowed next states
+CLIP_TRANSITIONS: dict[ClipState, frozenset[ClipState]] = {
+    ClipState.PENDING: frozenset({ClipState.ENCODING, ClipState.SKIPPED, ClipState.CANCELLED}),
+    ClipState.ENCODING: frozenset({
+        ClipState.VERIFYING,
+        ClipState.RETRYING,
+        ClipState.FAILED,
+        ClipState.FAILED_SIZE,
+        ClipState.FAILED_LIMIT,
+        ClipState.CANCELLED,
+    }),
+    ClipState.VERIFYING: frozenset({
+        ClipState.COMPLETED,
+        ClipState.NEEDS_REVIEW,
+        ClipState.RETRYING,
+        ClipState.FAILED,
+        ClipState.CANCELLED,
+    }),
+    ClipState.RETRYING: frozenset({
+        ClipState.ENCODING,
+        ClipState.FAILED,
+        ClipState.FAILED_SIZE,
+        ClipState.FAILED_LIMIT,
+        ClipState.CANCELLED,
+    }),
+    ClipState.COMPLETED: frozenset(),  # terminal
+    ClipState.NEEDS_REVIEW: frozenset(),  # terminal
+    ClipState.FAILED: frozenset(),  # terminal
+    ClipState.FAILED_SIZE: frozenset(),  # terminal
+    ClipState.FAILED_LIMIT: frozenset(),  # terminal
+    ClipState.SKIPPED: frozenset(),  # terminal
+    ClipState.CANCELLED: frozenset(),  # terminal
+}
+
+# Allowed job state transitions: current -> set of allowed next states
+JOB_TRANSITIONS: dict[JobState, frozenset[JobState]] = {
+    JobState.PENDING: frozenset({JobState.ANALYZING, JobState.QUEUED, JobState.CANCELLED}),
+    JobState.ANALYZING: frozenset({
+        JobState.QUEUED, JobState.PROCESSING, JobState.FAILED, JobState.CANCELLED,
+    }),
+    JobState.QUEUED: frozenset({JobState.PROCESSING, JobState.PAUSED, JobState.CANCELLED}),
+    JobState.PROCESSING: frozenset({
+        JobState.COMPLETED,
+        JobState.COMPLETED_WITH_ISSUES,
+        JobState.FAILED,
+        JobState.INTERRUPTED,
+        JobState.PAUSED,
+    }),
+    JobState.COMPLETED: frozenset(),  # terminal
+    JobState.COMPLETED_WITH_ISSUES: frozenset(),  # terminal
+    JobState.PAUSED: frozenset({JobState.PROCESSING, JobState.CANCELLED}),
+    JobState.INTERRUPTED: frozenset({JobState.PROCESSING, JobState.CANCELLED}),
+    JobState.CANCELLED: frozenset(),  # terminal
+    JobState.FAILED: frozenset(),  # terminal
+}
+
+
+def validate_clip_transition(
+    current: ClipState, next_state: ClipState
+) -> None:
+    """Raise ValueError if a clip cannot transition from ``current`` to ``next_state``.
+
+    Illegal transitions are a programming error, not a runtime condition —
+    catching them early prevents corrupt state from reaching the database.
+    """
+    allowed = CLIP_TRANSITIONS.get(current, frozenset())
+    if next_state not in allowed:
+        raise ValueError(
+            f"illegal clip state transition: {current.value} -> {next_state.value}"
+        )
+
+
+def validate_job_transition(current: JobState, next_state: JobState) -> None:
+    """Raise ValueError if a job cannot transition from ``current`` to ``next_state``."""
+    allowed = JOB_TRANSITIONS.get(current, frozenset())
+    if next_state not in allowed:
+        raise ValueError(
+            f"illegal job state transition: {current.value} -> {next_state.value}"
+        )
+
+
+def is_clip_terminal(state: ClipState) -> bool:
+    """Return True when a clip state is terminal (no further transitions)."""
+    return not CLIP_TRANSITIONS.get(state)
+
+
+def is_job_terminal(state: JobState) -> bool:
+    """Return True when a job state is terminal."""
+    return not JOB_TRANSITIONS.get(state)
+
+
+def is_clip_in_flight(state: ClipState) -> bool:
+    """Return True when a crash could leave a clip in this state."""
+    return state in CLIP_IN_FLIGHT_STATES
+
+
+def is_job_terminal_state(state: JobState) -> bool:
+    """Return True when no resume or retry can move a job out of this state."""
+    return state in JOB_TERMINAL_STATES
