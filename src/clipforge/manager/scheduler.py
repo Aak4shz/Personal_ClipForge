@@ -1,12 +1,20 @@
-"""In-memory job scheduler and execution loop (Phase 5, FR-ENC-05, FR-ENC-07, RULE-30)."""
+"""Database-backed job scheduler and execution loop.
+
+Phase 5 / Phase 8; FR-ENC-05, FR-ENC-07, RULE-22, RULE-30.
+
+Every clip state change commits to SQLite before the corresponding filesystem
+mutation happens (the transaction rule).
+"""
 
 from __future__ import annotations
 
 import contextlib
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from clipforge.core.config import ClipForgeConfig
 from clipforge.core.constants import (
@@ -40,6 +48,16 @@ from clipforge.optimizer.size_loop import (
 )
 from clipforge.planner.plan import JobPlan
 from clipforge.probe.metadata import ProbeData
+from clipforge.storage.manifest import write_manifest
+from clipforge.storage.repo import (
+    append_attempt,
+    create_job,
+    insert_clip,
+    set_job_counts,
+    set_job_state,
+    update_clip_state,
+)
+from clipforge.storage.schema import init_schema
 from clipforge.utils.atomic import atomic_publish
 
 
@@ -91,17 +109,25 @@ def run_job(
     probe: ProbeData,
     config: ClipForgeConfig,
     output_dir: Path,
+    db_path: Path | None = None,
+    job_id: int | None = None,
     on_clip_start: Callable[[int, int], None] | None = None,
     on_clip_progress: Callable[[int, ProgressFrame], None] | None = None,
     on_clip_done: Callable[[ClipResult], None] | None = None,
 ) -> JobResult:
-    """Execute the full job sequentially in-memory without database persistence.
+    """Execute the full job sequentially with SQLite persistence (RULE-22).
+
+    Every clip state change commits to SQLite before the corresponding
+    filesystem mutation. A job killed at any moment leaves a database that
+    opens consistently and describes exactly what finished.
 
     Args:
         plan: Prepared job boundaries and feasibility plan.
         probe: Source media probe data.
         config: Effective configuration for encoding, limits, and retries.
         output_dir: Directory where final clips and temporary parts will live.
+        db_path: SQLite database path. Defaults to ``config.paths.database``.
+        job_id: Existing job id to resume, or None to create a new job.
         on_clip_start: Optional callback when a clip starts (idx_1_based, total).
         on_clip_progress: Optional callback invoked on FFmpeg progress frames.
         on_clip_done: Optional callback invoked when a clip finishes.
@@ -112,6 +138,34 @@ def run_job(
     output_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir = output_dir / ".clipforge_tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    if db_path is None:
+        db_path = config.paths.database
+
+    config_snapshot = {
+        "processing": config.processing.model_dump(),
+        "output": config.output.model_dump(),
+        "optimizer": config.optimizer.model_dump(),
+        "quality": config.quality.model_dump(),
+        "fault_tolerance": config.fault_tolerance.model_dump(),
+        "performance": config.performance.model_dump(),
+    }
+
+    # Ensure schema exists before any DB write (RULE-22)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _schema_conn = sqlite3.connect(str(db_path), timeout=30.0, isolation_level=None)
+    try:
+        init_schema(_schema_conn)
+    finally:
+        _schema_conn.close()
+
+    # Create or load the job row (RULE-27: config snapshot per job)
+    if job_id is None:
+        job_id = create_job(
+            db_path, plan.input_path, output_dir, cast(dict[str, object], config_snapshot)
+        )
+
+    set_job_state(db_path, job_id, JobState.PROCESSING)
 
     clip_results: list[ClipResult] = []
     padding = max(4, len(str(plan.clip_count)))
@@ -128,6 +182,9 @@ def run_job(
             part_path = tmp_dir / f"{clip_filename}.part"
             final_path = output_dir / clip_filename
             passlog_prefix = tmp_dir / f"{clip_filename}_passlog"
+
+            # Insert clip row as PENDING (DB commit before any filesystem work)
+            insert_clip(db_path, job_id, clip_idx, boundary.start_us, boundary.duration_us)
 
             # Calculate initial budget and starting CRF (FR-OPT-02, 03, 05)
             audio_ch = (
@@ -169,6 +226,7 @@ def run_job(
             clip_state = ClipState.PENDING
             error_msg: str | None = None
             final_size = 0
+            attempt_number = 0
 
             while True:
                 if total_encodes >= config.optimizer.max_total_encodes:
@@ -216,6 +274,7 @@ def run_job(
                         target_fps=tgt_fps,
                     )
                     total_encodes += 1
+                    attempt_number += 1
                     pass1_res = run_encode(
                         cmd=pass1_cmd,
                         output_part_path=part_path,
@@ -223,6 +282,17 @@ def run_job(
                         timeout=timeout,
                         on_progress=_progress_cb,
                         is_analysis_pass=True,
+                    )
+                    append_attempt(
+                        db_path,
+                        job_id,
+                        clip_idx,
+                        attempt_number,
+                        "pass1",
+                        "success" if pass1_res.success else "failed",
+                        crf=current_crf,
+                        duration_seconds=clip_duration_sec,
+                        stderr_tail=pass1_res.stderr_tail,
                     )
                     if not pass1_res.success:
                         _clean_passlogs(tmp_dir, clip_filename)
@@ -289,6 +359,7 @@ def run_job(
                     )
 
                 total_encodes += 1
+                attempt_number += 1
                 encode_res = run_encode(
                     cmd=cmd,
                     output_part_path=part_path,
@@ -298,6 +369,19 @@ def run_job(
                 )
                 if is_two_pass:
                     _clean_passlogs(tmp_dir, clip_filename)
+
+                append_attempt(
+                    db_path,
+                    job_id,
+                    clip_idx,
+                    attempt_number,
+                    "encode",
+                    "success" if encode_res.success else "failed",
+                    size_bytes=encode_res.size_bytes,
+                    crf=current_crf,
+                    duration_seconds=clip_duration_sec,
+                    stderr_tail=encode_res.stderr_tail,
+                )
 
                 if not encode_res.success:
                     if (
@@ -480,8 +564,28 @@ def run_job(
                 final_size = actual_size
                 break
 
+            # DB commit before filesystem mutation: record clip outcome (RULE-22)
             is_pub = clip_state in (ClipState.COMPLETED, ClipState.NEEDS_REVIEW)
             pub_path = final_path if is_pub else None
+            update_clip_state(
+                db_path,
+                job_id,
+                clip_idx,
+                clip_state,
+                output_path=pub_path,
+                size_bytes=final_size,
+                size_attempts=size_attempts,
+                fault_retries=fault_retries,
+                total_encodes=total_encodes,
+                two_pass=is_two_pass,
+                crf=current_crf,
+                error_message=error_msg,
+                degradation=degradation_state.steps_applied,
+                quality_metric=q_verdict.metric if q_verdict else None,
+                quality_score=q_verdict.score if q_verdict else None,
+                quality_threshold=q_verdict.threshold if q_verdict else None,
+            )
+
             result = ClipResult(
                 index=clip_idx,
                 start_us=boundary.start_us,
@@ -501,6 +605,29 @@ def run_job(
                 quality_threshold=q_verdict.threshold if q_verdict else None,
             )
             clip_results.append(result)
+
+            # Job counters + manifest after every clip (RULE-08 style atomicity)
+            completed_n = sum(1 for c in clip_results if c.state == ClipState.COMPLETED)
+            failed_n = sum(
+                1
+                for c in clip_results
+                if c.state in (ClipState.FAILED, ClipState.FAILED_SIZE, ClipState.FAILED_LIMIT)
+            )
+            review_n = sum(1 for c in clip_results if c.state == ClipState.NEEDS_REVIEW)
+            set_job_counts(db_path, job_id, plan.clip_count, completed_n, failed_n, review_n)
+
+            clip_record = {
+                "index": result.index,
+                "state": result.state.value,
+                "size_bytes": result.size_bytes,
+                "path": str(result.output_path) if result.output_path else None,
+                "error": result.error_message,
+                "degradation": list(result.degradation),
+                "quality_metric": result.quality_metric,
+                "quality_score": result.quality_score,
+            }
+            write_manifest(output_dir, job_id, cast(list[dict[str, object]], [clip_record]))
+
             if on_clip_done:
                 on_clip_done(result)
 
@@ -536,6 +663,10 @@ def run_job(
             )
         else:
             job_state = JobState.COMPLETED
+
+    # Commit final job state to the database
+    set_job_state(db_path, job_id, job_state)
+    set_job_counts(db_path, job_id, plan.clip_count, completed, failed, review)
 
     return JobResult(
         input_path=plan.input_path,
