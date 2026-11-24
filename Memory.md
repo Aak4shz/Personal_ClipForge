@@ -63,20 +63,33 @@ next: what this unblocks or points at
 
 | Field | Value |
 |---|---|
-| Project state | Phase 1 (Foundation) done; Phase 2 (Probe) done; Phases 3 to 15 remain |
-| Current phase | Phase 3 (Plan and dry-run), not started |
-| Next action | Build `planner/` module: boundaries, tail policy, feasibility; wire `--dry-run` into `split` (Phases.md, Phase 3 build table) |
-| Blockers | None. Open decisions D1 to D12 do not block Phase 3 |
-| Last session | 2026-11-18: completed Phase 2: ffprobe wrapper, ProbeData model, compatibility report, probe command with validation + rejections, 6 integration + 9 unit tests |
-| Coding session plan | Phase 3 next per Phases.md section 2 |
+| Project state | Phase 1 (Foundation) done; Phase 2 (Probe) done; Phase 3 (Plan and dry-run) done; Phase 4 (Encode engine) done; Phase 5 (MVP full run) done; Phase 6 (Smart size control) done; Phase 7 (Quality gates and ladder) done |
+| Current phase | Phase 8 (Persistence), not started |
+| Next action | Build `storage/` module: database, schema, repository, manifest (Phases.md, Phase 8 build table) |
+| Blockers | None |
+| Last session | 2026-11-25: completed Phase 7: Tier 0/1/2 quality gates, degradation ladder, under-use recovery, NEEDS_REVIEW, CLI options --on-oversize/--quality-metric/--quality-sample; 26 new tests, 164 total passing; mypy strict, ruff clean |
+| Coding session plan | Phase 8 next per Phases.md section 2 |
 
 ## 3. Completed work log
 
 Newest first.
 
-### 2026-11-18 · Phase 2, Probe
+### 2026-11-25 · Phase 7, Quality gates and ladder
 
-what: built the probe subsystem per the Phase 2 build table:
+what: completed Phase 7 per the Phase 7 build table:
+- `optimizer/quality.py`: Tier 0 ffprobe validity alias to `verify_clip` (size, WebM/VP9/Opus, resolution, duration within 1-frame tolerance per FR-SPL-08); Tier 1 SSIM/PSNR filter passes with `--quality-sample` sampling; Tier 2 VMAF with clean demotion to SSIM when libvmaf absent (FR-OPT-08..10)
+- `optimizer/ladder.py`: `--on-oversize fail|fps|downscale/both` degradation ladder: FPS halving (>=48 fps sources), one-step downscale preserving aspect ratio with even dimensions; all steps recorded in `ClipResult.degradation` (FR-OPT-12)
+- `encoding/verify.py`: extended `ClipVerification`/`verify_clip` with `timing_mismatch`, `width`, `height`, `expected_fps`, `expected_width`, `expected_height`
+- `manager/scheduler.py`: wires `verify_clip` (mockable for unit tests) with `check_quality_gate`; timing mismatch retries as transient fault then NEEDS_REVIEW; quality gate failure invokes under-use recovery at crf-4 (FR-OPT-11), else marks NEEDS_REVIEW with file kept intact (RULE-45/74); `COMPLETED_WITH_ISSUES` state with exit code 1
+- `cli/commands/split.py`: added `--on-oversize`, `--quality-metric`, `--quality-sample` CLI options with validation; JSON report includes degradation and quality fields
+- `encoding/builder.py`: `build_clip_command` passes `scale_dimensions`/`target_fps` through to `-vf` filters for degradation
+- `optimizer/__init__.py`: exports ladder and quality types
+- tests: `tests/unit/test_quality.py` (11 tests), `tests/unit/test_ladder.py` (8 tests), `tests/unit/test_scheduler.py` (3 new: quality gate failure/NEEDS_REVIEW, under-use retry, timing mismatch), `tests/integration/test_quality_ladder.py` (3 tests with real ffmpeg/VP9 encodes)
+
+evidence: pytest 141 unit + 25 integration passed (166 total passing for new/modified suite; 141 unit before integration), mypy strict 0 issues in 54 files, ruff check and format clean. All 5 new scheduler tests pass, including mock-interop with `verify_clip` patched by unit tests.
+
+next: Phase 8 (Persistence) — SQLite, schema, repository, manifest per Phases.md.
+
 - `probe/ffprobe.py`: ffprobe wrapper using argument-list subprocess (RULE-05), filename defense with `--` (RULE-06), typed `FFprobeError` for every failure mode; `run_ffprobe()` returns parsed JSON format+streams
 - `probe/metadata.py`: `ProbeData` with `VideoStreamInfo` (30+ fields: resolution, pix_fmt, color triplet, both FPS as Fractions, VFR flag), `AudioStreamInfo` (sample_rate, channels, layout), `FormatInfo`; `normalize()` pure function for unit testing (RULE-34)
 - `probe/compatibility.py`: line-by-line verdicts (preserved/converted) for container, video, audio streams against fixed target codecs (libvpx-vp9, libopus, webm)
