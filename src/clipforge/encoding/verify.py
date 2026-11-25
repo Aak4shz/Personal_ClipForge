@@ -22,12 +22,18 @@ class ClipVerification:
     audio_codec: str | None
     duration_seconds: float | None
     errors: list[str]
+    timing_mismatch: bool = False
+    width: int | None = None
+    height: int | None = None
 
 
 def verify_clip(
     clip_path: Path,
     max_size_bytes: int = MAX_CLIP_SIZE_BYTES,
     expected_duration: float | None = None,
+    expected_fps: float | None = None,
+    expected_width: int | None = None,
+    expected_height: int | None = None,
 ) -> ClipVerification:
     """Verify that an encoded clip exists, adheres to the size cap, and is valid WebM.
 
@@ -77,6 +83,9 @@ def verify_clip(
     video_codec: str | None = None
     audio_codec: str | None = None
     duration_seconds: float | None = None
+    width: int | None = None
+    height: int | None = None
+    timing_mismatch = False
 
     try:
         res = run_ffprobe(clip_path)
@@ -100,6 +109,8 @@ def verify_clip(
                 video_codec = c_name
                 if c_name != "vp9":
                     errors.append(f"video codec is not vp9: '{c_name}'")
+                width = s.get("width")
+                height = s.get("height")
             elif codec_type == "audio":
                 audio_codec = c_name
                 if c_name != "opus":
@@ -108,15 +119,22 @@ def verify_clip(
         if not has_video:
             errors.append("no video stream found in clip")
 
-        if (
-            expected_duration is not None
-            and duration_seconds is not None
-            and abs(duration_seconds - expected_duration) > 1.0
-        ):
-            errors.append(
-                f"duration {duration_seconds:.2f} s diverges from "
-                f"expected {expected_duration:.2f} s"
-            )
+        # Resolution verification (FR-OPT-12)
+        if expected_width is not None and width is not None and width != expected_width:
+            errors.append(f"width {width} does not match expected {expected_width}")
+        if expected_height is not None and height is not None and height != expected_height:
+            errors.append(f"height {height} does not match expected {expected_height}")
+
+        # Timing verification (FR-SPL-08: within 1 frame tolerance)
+        if expected_duration is not None and duration_seconds is not None:
+            fps = expected_fps or 30.0
+            tolerance = (1.0 / fps) + 0.05
+            if abs(duration_seconds - expected_duration) > tolerance:
+                timing_mismatch = True
+                errors.append(
+                    f"duration {duration_seconds:.3f} s diverges from "
+                    f"expected {expected_duration:.3f} s (> 1 frame tolerance)"
+                )
 
     except FFprobeError as exc:
         errors.append(f"ffprobe failed to inspect clip: {exc.meaning}")
@@ -133,4 +151,7 @@ def verify_clip(
         audio_codec=audio_codec,
         duration_seconds=duration_seconds,
         errors=errors,
+        timing_mismatch=timing_mismatch,
+        width=width,
+        height=height,
     )
