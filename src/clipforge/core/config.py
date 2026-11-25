@@ -122,6 +122,7 @@ class QualityConfig(_Strict):
     metric: QualityMetric = "ssim"
     sample_every: int = Field(default=1, ge=1)
     ssim_min: float = Field(default=0.95, gt=0.0, le=1.0)
+    psnr_min: float = Field(default=35.0, gt=0.0)
     vmaf_min: float = Field(default=80.0, ge=0.0, le=100.0)
 
 
