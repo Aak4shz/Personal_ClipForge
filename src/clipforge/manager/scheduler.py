@@ -22,6 +22,14 @@ from clipforge.optimizer.budget import (
     calculate_budget,
     default_audio_bitrate_bps,
 )
+from clipforge.optimizer.ladder import (
+    DegradationState,
+    next_degradation_step,
+)
+from clipforge.optimizer.quality import (
+    QualityVerdict,
+    check_quality_gate,
+)
 from clipforge.optimizer.size_loop import (
     adjust_crf_for_underuse,
     can_retry_size,
@@ -58,6 +66,10 @@ class ClipResult:
     two_pass: bool = False
     crf: int = 32
     error_message: str | None = None
+    degradation: tuple[str, ...] = ()
+    quality_metric: str | None = None
+    quality_score: float | None = None
+    quality_threshold: float | None = None
 
 
 @dataclass(frozen=True)
@@ -128,14 +140,16 @@ def run_job(
             audio_bps = default_audio_bitrate_bps(audio_ch) if probe.has_audio else 0
 
             v = probe.primary_video
-            height = v.display_height if (v and v.display_height) else (v.height if v else 1080)
+            source_w = v.display_width if (v and v.display_width) else (v.width if v else 1920)
+            source_h = v.display_height if (v and v.display_height) else (v.height if v else 1080)
+            source_fps = float(v.avg_frame_rate) if (v and v.avg_frame_rate) else 30.0
             feasibility_verdict = plan.feasibility.verdict if plan.feasibility else "comfortable"
 
             budget = calculate_budget(
                 duration_us=boundary.duration_us,
                 audio_bps=audio_bps,
                 target_bytes=TARGET_CLIP_SIZE_BYTES,
-                height=height,
+                height=source_h,
                 feasibility_class=feasibility_verdict,
                 crf_start=config.optimizer.crf_start,
                 crf_max=config.optimizer.crf_max,
@@ -145,6 +159,8 @@ def run_job(
             current_crf = budget.crf
             clip_duration_sec = boundary.duration_us / 1_000_000
 
+            degradation_state = DegradationState()
+            q_verdict: QualityVerdict | None = None
             size_attempts = 0
             fault_retries = 0
             total_encodes = 0
@@ -170,6 +186,17 @@ def run_job(
                     if on_clip_progress:
                         on_clip_progress(bound_idx, frame)
 
+                scale_dims = (
+                    (degradation_state.target_width, degradation_state.target_height)
+                    if (
+                        degradation_state.downscaled
+                        and degradation_state.target_width
+                        and degradation_state.target_height
+                    )
+                    else None
+                )
+                tgt_fps = degradation_state.target_fps if degradation_state.fps_halved else None
+
                 if is_two_pass:
                     # Pass 1: Analysis pass
                     pass1_cmd = build_clip_command(
@@ -185,6 +212,8 @@ def run_job(
                         audio_channels_policy=config.output.audio_channels,
                         pass_number=1,
                         passlogfile=passlog_prefix,
+                        scale_dimensions=scale_dims,
+                        target_fps=tgt_fps,
                     )
                     total_encodes += 1
                     pass1_res = run_encode(
@@ -240,6 +269,8 @@ def run_job(
                         audio_channels_policy=config.output.audio_channels,
                         pass_number=2,
                         passlogfile=passlog_prefix,
+                        scale_dimensions=scale_dims,
+                        target_fps=tgt_fps,
                     )
                 else:
                     cmd = build_clip_command(
@@ -253,6 +284,8 @@ def run_job(
                         crf=current_crf,
                         threads=config.performance.ffmpeg_threads,
                         audio_channels_policy=config.output.audio_channels,
+                        scale_dimensions=scale_dims,
+                        target_fps=tgt_fps,
                     )
 
                 total_encodes += 1
@@ -305,6 +338,40 @@ def run_job(
                         part_path.unlink(missing_ok=True)
                         continue
 
+                    # Check degradation ladder before declaring FAILED_SIZE (FR-OPT-12)
+                    ladder_step = next_degradation_step(
+                        degradation_state,
+                        config.output.on_oversize,
+                        source_w,
+                        source_h,
+                        source_fps,
+                    )
+                    if (
+                        ladder_step is not None
+                        and total_encodes < config.optimizer.max_total_encodes
+                    ):
+                        degradation_state = ladder_step
+                        size_attempts = 0
+                        is_two_pass = False
+                        part_path.unlink(missing_ok=True)
+                        new_h = (
+                            degradation_state.target_height
+                            if degradation_state.target_height
+                            else source_h
+                        )
+                        new_budget = calculate_budget(
+                            duration_us=boundary.duration_us,
+                            audio_bps=audio_bps,
+                            target_bytes=TARGET_CLIP_SIZE_BYTES,
+                            height=new_h,
+                            feasibility_class=feasibility_verdict,
+                            crf_start=config.optimizer.crf_start,
+                            crf_max=config.optimizer.crf_max,
+                        )
+                        current_video_bps = new_budget.video_bps
+                        current_crf = new_budget.crf
+                        continue
+
                     clip_state = ClipState.FAILED_SIZE
                     error_msg = (
                         f"size {actual_size:,} bytes exceeds hard limit "
@@ -313,51 +380,114 @@ def run_job(
                     part_path.unlink(missing_ok=True)
                     break
 
-                # Under-use check hook (FR-OPT-11, paired with quality gates in Phase 7)
-                quality_passed = True  # Tier 1/2 gates arrive in Phase 7
-                if check_underuse(
-                    actual_size_bytes=actual_size,
-                    target_size_bytes=TARGET_CLIP_SIZE_BYTES,
-                    quality_passed=quality_passed,
-                    underuse_attempts=underuse_attempts,
-                ):
-                    underuse_attempts += 1
-                    current_crf = adjust_crf_for_underuse(current_crf)
-                    part_path.unlink(missing_ok=True)
-                    continue
-
-                # Container and codec validation
-                verification = verify_clip(
+                # Tier 0 Gate: Container, codecs, resolution, and timing (FR-SPL-08)
+                exp_fps = (
+                    degradation_state.target_fps if degradation_state.fps_halved else source_fps
+                )
+                exp_w = degradation_state.target_width if degradation_state.downscaled else source_w
+                exp_h = (
+                    degradation_state.target_height if degradation_state.downscaled else source_h
+                )
+                tier0 = verify_clip(
                     clip_path=part_path,
                     max_size_bytes=config.output.max_size,
                     expected_duration=clip_duration_sec,
+                    expected_fps=exp_fps,
+                    expected_width=exp_w,
+                    expected_height=exp_h,
                 )
-                if not verification.valid:
+                if not tier0.valid:
+                    if tier0.timing_mismatch:
+                        if (
+                            fault_retries < config.fault_tolerance.fault_retries
+                            and total_encodes < config.optimizer.max_total_encodes
+                        ):
+                            fault_retries += 1
+                            delays = config.fault_tolerance.retry_delays_seconds
+                            delay = (
+                                delays[min(fault_retries - 1, len(delays) - 1)] if delays else 0.0
+                            )
+                            if delay > 0:
+                                time.sleep(delay)
+                            part_path.unlink(missing_ok=True)
+                            continue
+
+                        # Survived retries -> marks NEEDS_REVIEW per FR-SPL-08
+                        clip_state = ClipState.NEEDS_REVIEW
+                        error_msg = f"timing mismatch survived retries: {'; '.join(tier0.errors)}"
+                        atomic_publish(part_path, final_path)
+                        final_size = actual_size
+                        break
+
                     if (
                         fault_retries < config.fault_tolerance.fault_retries
                         and total_encodes < config.optimizer.max_total_encodes
                     ):
                         fault_retries += 1
+                        delays = config.fault_tolerance.retry_delays_seconds
+                        delay = delays[min(fault_retries - 1, len(delays) - 1)] if delays else 0.0
+                        if delay > 0:
+                            time.sleep(delay)
                         part_path.unlink(missing_ok=True)
                         continue
 
                     clip_state = ClipState.FAILED
-                    error_msg = f"clip verification failed: {'; '.join(verification.errors)}"
+                    error_msg = f"clip verification failed: {'; '.join(tier0.errors)}"
                     part_path.unlink(missing_ok=True)
                     break
 
-                # Atomic publish (RULE-08, fsync + os.replace)
+                # Tier 1/2 Quality Gate (FR-OPT-08..10)
+                q_verdict = check_quality_gate(
+                    clip_path=part_path,
+                    source_path=probe.input_path,
+                    start_us=boundary.start_us,
+                    duration_us=boundary.duration_us,
+                    config=config.quality,
+                    clip_index=clip_idx,
+                    target_width=degradation_state.target_width,
+                    target_height=degradation_state.target_height,
+                )
+
+                if not q_verdict.passed:
+                    # Under-use check (FR-OPT-11)
+                    if check_underuse(
+                        actual_size_bytes=actual_size,
+                        target_size_bytes=TARGET_CLIP_SIZE_BYTES,
+                        quality_passed=False,
+                        underuse_attempts=underuse_attempts,
+                    ):
+                        underuse_attempts += 1
+                        current_crf = adjust_crf_for_underuse(current_crf)
+                        part_path.unlink(missing_ok=True)
+                        continue
+
+                    # Failed quality gate without underuse retry -> mark NEEDS_REVIEW (RULE-45)
+                    clip_state = ClipState.NEEDS_REVIEW
+                    if q_verdict.score is not None and q_verdict.threshold is not None:
+                        error_msg = (
+                            f"quality gate failed: {q_verdict.metric} score "
+                            f"{q_verdict.score:.4f} < threshold {q_verdict.threshold:.4f}"
+                        )
+                    else:
+                        error_msg = q_verdict.error or "quality gate failed"
+                    atomic_publish(part_path, final_path)
+                    final_size = actual_size
+                    break
+
+                # Atomic publish for fully passing clip (RULE-08, fsync + os.replace)
                 atomic_publish(part_path, final_path)
                 clip_state = ClipState.COMPLETED
                 final_size = actual_size
                 break
 
+            is_pub = clip_state in (ClipState.COMPLETED, ClipState.NEEDS_REVIEW)
+            pub_path = final_path if is_pub else None
             result = ClipResult(
                 index=clip_idx,
                 start_us=boundary.start_us,
                 duration_us=boundary.duration_us,
                 state=clip_state,
-                output_path=final_path if clip_state == ClipState.COMPLETED else None,
+                output_path=pub_path,
                 size_bytes=final_size,
                 size_attempts=size_attempts,
                 fault_retries=fault_retries,
@@ -365,6 +495,10 @@ def run_job(
                 two_pass=is_two_pass,
                 crf=current_crf,
                 error_message=error_msg,
+                degradation=degradation_state.steps_applied,
+                quality_metric=q_verdict.metric if q_verdict else None,
+                quality_score=q_verdict.score if q_verdict else None,
+                quality_threshold=q_verdict.threshold if q_verdict else None,
             )
             clip_results.append(result)
             if on_clip_done:
@@ -397,7 +531,9 @@ def run_job(
 
     if job_state != JobState.INTERRUPTED:
         if failed > 0 or review > 0:
-            job_state = JobState.COMPLETED_WITH_ISSUES if completed > 0 else JobState.FAILED
+            job_state = (
+                JobState.COMPLETED_WITH_ISSUES if (completed > 0 or review > 0) else JobState.FAILED
+            )
         else:
             job_state = JobState.COMPLETED
 
