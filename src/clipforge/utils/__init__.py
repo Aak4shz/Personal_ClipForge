@@ -17,4 +17,3 @@ __all__ = [
     "parse_time_to_microseconds",
     "state_home",
 ]
-
