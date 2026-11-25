@@ -7,4 +7,3 @@ __all__ = [
     "JobResult",
     "run_job",
 ]
-
