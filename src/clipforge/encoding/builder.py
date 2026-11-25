@@ -43,6 +43,8 @@ def build_encode_command(
     threads: int = 3,
     pass_number: int | None = None,
     passlogfile: Path | None = None,
+    scale_dimensions: tuple[int, int] | None = None,
+    target_fps: float | None = None,
 ) -> list[str]:
     """Assemble the full argument list for encoding one clip.
 
@@ -66,15 +68,21 @@ def build_encode_command(
         threads: Number of CPU threads (default 3).
         pass_number: Optional pass number (1 or 2) for two-pass control.
         passlogfile: Base path for passlogfile if pass_number is set.
+        scale_dimensions: Optional (width, height) to downscale to via -vf scale.
+        target_fps: Optional target fps to set via -vf fps.
 
     Returns:
         List of command-line arguments ready for subprocess (shell=False).
     """
+    effective_w = scale_dimensions[0] if scale_dimensions is not None else width
+    effective_h = scale_dimensions[1] if scale_dimensions is not None else height
+    effective_fps = target_fps if target_fps is not None else fps
+
     p_settings = get_profile(profile)
-    tile_columns = calculate_tile_columns(width)
-    lag_in_frames = calculate_lag_in_frames(width, height)
+    tile_columns = calculate_tile_columns(effective_w)
+    lag_in_frames = calculate_lag_in_frames(effective_w, effective_h)
     duration_seconds = duration_us / 1_000_000
-    keyframe_interval = calculate_keyframe_interval(duration_seconds, fps)
+    keyframe_interval = calculate_keyframe_interval(duration_seconds, effective_fps)
 
     # Pixel format: Profile 0 (8-bit yuv420p) or Profile 2 (10-bit yuv420p10le)
     is_10_bit = (bits_per_raw_sample is not None and bits_per_raw_sample > 8) or (
@@ -99,6 +107,17 @@ def build_encode_command(
         "-map",
         "0:v:0",
     ]
+
+    # Video filters for degradation ladder (scale, fps)
+    filters: list[str] = []
+    if target_fps is not None and abs(target_fps - fps) > 0.01:
+        filters.append(f"fps={target_fps:.6f}")
+    if scale_dimensions is not None and (
+        scale_dimensions[0] != width or scale_dimensions[1] != height
+    ):
+        filters.append(f"scale={scale_dimensions[0]}:{scale_dimensions[1]}")
+    if filters:
+        cmd.extend(["-vf", ",".join(filters)])
 
     # Video codec settings
     cmd.extend(
@@ -176,6 +195,8 @@ def build_clip_command(
     audio_channels_policy: str = "keep",
     pass_number: int | None = None,
     passlogfile: Path | None = None,
+    scale_dimensions: tuple[int, int] | None = None,
+    target_fps: float | None = None,
 ) -> list[str]:
     """Helper to assemble command directly from ProbeData."""
     v = probe.primary_video
@@ -209,4 +230,6 @@ def build_clip_command(
         threads=threads,
         pass_number=pass_number,
         passlogfile=passlogfile,
+        scale_dimensions=scale_dimensions,
+        target_fps=target_fps,
     )
