@@ -326,6 +326,27 @@ def run(
             help="Number of CPU threads for FFmpeg.",
         ),
     ] = None,
+    on_oversize: Annotated[
+        str,
+        typer.Option(
+            "--on-oversize",
+            help="Ladder policy on oversize: 'fail', 'fps', 'downscale', or 'both'.",
+        ),
+    ] = "fail",
+    quality_metric: Annotated[
+        str,
+        typer.Option(
+            "--quality-metric",
+            help="Quality gate metric: 'none', 'ssim', 'psnr', or 'vmaf'.",
+        ),
+    ] = "ssim",
+    quality_sample: Annotated[
+        int,
+        typer.Option(
+            "--quality-sample",
+            help="Evaluate quality gate every N clips (default 1).",
+        ),
+    ] = 1,
     json_output: Annotated[
         bool,
         typer.Option(
@@ -334,7 +355,7 @@ def run(
         ),
     ] = False,
 ) -> None:
-    """Plan or run a split into capped clips (Phase 3 & Phase 5)."""
+    """Plan or run a split into capped clips (Phase 3, Phase 5, Phase 7)."""
     if tail not in ("merge_into_previous", "keep", "drop"):
         raise UsageError(
             what=f"invalid tail policy: '{tail}'",
@@ -347,6 +368,27 @@ def run(
             what=f"invalid profile: '{profile}'",
             meaning="profile must be 'fast', 'balanced', or 'best'",
             fix="use --profile fast, --profile balanced, or --profile best",
+        )
+
+    if on_oversize not in ("fail", "fps", "downscale", "both"):
+        raise UsageError(
+            what=f"invalid on-oversize policy: '{on_oversize}'",
+            meaning="on-oversize must be 'fail', 'fps', 'downscale', or 'both'",
+            fix="use --on-oversize fail|fps|downscale|both",
+        )
+
+    if quality_metric not in ("none", "ssim", "psnr", "vmaf"):
+        raise UsageError(
+            what=f"invalid quality metric: '{quality_metric}'",
+            meaning="quality metric must be 'none', 'ssim', 'psnr', or 'vmaf'",
+            fix="use --quality-metric none|ssim|psnr|vmaf",
+        )
+
+    if quality_sample < 1:
+        raise UsageError(
+            what=f"invalid quality sample interval: {quality_sample}",
+            meaning="quality sample interval must be >= 1",
+            fix="use --quality-sample with an integer of 1 or greater",
         )
 
     _validate_input_file(input_path)
@@ -397,6 +439,9 @@ def run(
         "processing.min_tail_seconds": min_tail,
         "output.profile": profile,
         "output.audio_channels": audio_channels,
+        "output.on_oversize": on_oversize,
+        "quality.metric": quality_metric,
+        "quality.sample_every": quality_sample,
     }
     if max_size is not None:
         overrides["output.max_size"] = max_size
@@ -452,6 +497,9 @@ def run(
                     "size_bytes": c.size_bytes,
                     "path": str(c.output_path) if c.output_path else None,
                     "error": c.error_message,
+                    "degradation": list(c.degradation),
+                    "quality_metric": c.quality_metric,
+                    "quality_score": c.quality_score,
                 }
                 for c in job_res.clip_results
             ],
