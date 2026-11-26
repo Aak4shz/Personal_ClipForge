@@ -136,6 +136,16 @@ def run_encode(
             # Kill ladder step 2: SIGKILL after 5s
             _kill_process_group(proc, signal.SIGKILL)
             proc.wait()
+    except KeyboardInterrupt:
+        # Graceful interrupt (Phase 9): kill the FFmpeg process group so a
+        # Ctrl+C doesn't orphan an encode, then re-raise for the caller.
+        _kill_process_group(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc, signal.SIGKILL)
+            proc.wait()
+        raise
 
     t_out.join(timeout=1.0)
     t_err.join(timeout=1.0)
