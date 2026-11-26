@@ -7,7 +7,7 @@
 | **Maintainer** | Whoever is working: Aakash or any agent |
 | **Repo** | `/home/aakash/Code/Personal_ClipForge` |
 | **Remote** | `https://github.com/Aak4shz/Personal_ClipForge.git` |
-| **Last updated** | 2026-11-25 |
+| **Last updated** | 2026-11-26 |
 
 **Start every session on this project by reading this file.** It is the fastest map of where things stand, and it is written to be read by the next session, the next model, or the next agent with no other context. Everything here is kept current on purpose; trust it, and keep it that way by updating it as you work.
 
@@ -63,18 +63,38 @@ next: what this unblocks or points at
 
 | Field | Value |
 |---|---|
-| Project state | Phase 1 (Foundation) done; Phase 2 (Probe) done; Phase 3 (Plan and dry-run) done; Phase 4 (Encode engine) done; Phase 5 (MVP full run) done; Phase 6 (Smart size control) done; Phase 7 (Quality gates and ladder) done; Phase 8 (Persistence) done |
-| Current phase | Phase 8 (Persistence), done |
-| Next action | Phase 9 (Resume and recovery): graceful interrupt, resume command, locks, disk guards |
+| Project state | Phase 1 (Foundation) done; Phase 2 (Probe) done; Phase 3 (Plan and dry-run) done; Phase 4 (Encode engine) done; Phase 5 (MVP full run) done; Phase 6 (Smart size control) done; Phase 7 (Quality gates and ladder) done; Phase 8 (Persistence) done; Phase 9 (Resume and recovery) done |
+| Current phase | Phase 9 (Resume and recovery), done |
+| Next action | Phase 10 (Fault tolerance): classifier, counter wiring, retry schedule, watchdog integration, corruption handling |
 | Blockers | None |
-| Last session | 2026-11-25: completed Phase 8: SQLite WAL storage (db.py), schema versioning via PRAGMA user_version (schema.py), repository layer (repo.py) with jobs/clips/attempts/events, state machine validation in core/constants.py, scheduler rewrite to database-backed run_job with RULE-22 transaction rule, manifest.json written atomically after every clip, crash recovery via reset_in_flight_clips; 9 new persistence integration tests, 173 total passing; mypy strict, ruff clean |
+| Last session | 2026-11-26: completed Phase 9 per the Phase 9 build table:
+- `manager/scheduler.py`: graceful interrupt (first Ctrl+C cleans the active encode and removes orphan `.part`/passlog files, second Ctrl+C exits 130 immediately); resume path skips terminal-state clips without re-encoding (RULE-66), reconstructs their ClipResult from DB rows, and leaves completed clips' files untouched; existing clip rows not re-inserted on resume; `run_job` split into `run_job()` + `_run_job_locked()` with `JobLock(output_dir)` held for the job body; pre-flight `assert_disk_fit` plus runtime `free_bytes()` check before every clip
+- `manager/recovery.py`: `prepare_resume(db_path, input_path, output_dir)` — loads job row, re-opens it PROCESSING, resets ENCODING/VERIFYING/RETRYING clips to PENDING, re-PENDING clips whose output file vanished, returns job id + pending clips in index order; `fingerprint_file()` SHA-256 of whole input
+- `cli/commands/resume.py`: `run()` command — validates input, duplicate detection via `job_exists`, fingerprint guard (RULE-26) refusing modified input, `prepare_resume`, then runs `run_job` with `job_id`; handles `--deep-verify`; exit codes per `JobResult` state
+- `manager/locks.py`: `JobLock` flock per output folder; `JobLockedError(message, meaning, fix)`; `duplicate_detected()` delegates to `job_exists`
+- `monitoring/sampler.py`: `DiskFullError(message, meaning, fix)`, `estimate_needed_bytes`, `free_bytes`, `assert_disk_fit`
+- tests: `tests/integration/test_resume.py` (interrupt resume zero re-encode, prepare resets in-flight/missing, disk full pause with completed intact, duplicate same input/output, fingerprint refused on modified input), `tests/integration/test_diskfull.py`, `tests/integration/test_duplicate.py` (JobLock acquire/release, second process fails, duplicate_detected found/none, fingerprint returns size+sha)
+evidence: pytest 186 passed; mypy --strict 0 issues in 62 files; ruff check clean |
 | Coding session plan | Phase 9: resume and recovery |
 
 ## 3. Completed work log
 
 Newest first.
 
-### 2026-11-25 · Phase 7, Quality gates and ladder
+### 2026-11-26 · Phase 9, Resume and recovery
+
+what: completed Phase 9 per the Phase 9 build table:
+- `manager/scheduler.py`: graceful interrupt (first Ctrl+C cleans the active encode and removes orphan `.part`/passlog files, second Ctrl+C exits 130 immediately); resume path skips terminal-state clips without re-encoding (RULE-66), reconstructs their ClipResult from DB rows, and leaves completed clips' files untouched; existing clip rows not re-inserted on resume; `run_job` split into `run_job()` + `_run_job_locked()` with `JobLock(output_dir)` held for the job body; pre-flight `assert_disk_fit` plus runtime `free_bytes()` check before every clip
+- `manager/recovery.py`: `prepare_resume(db_path, input_path, output_dir)` — loads job row, re-opens it PROCESSING, resets ENCODING/VERIFYING/RETRYING clips to PENDING, re-PENDING clips whose output file vanished, returns job id + pending clips in index order; `fingerprint_file()` SHA-256 of whole input
+- `cli/commands/resume.py`: `run()` command — validates input, duplicate detection via `job_exists`, fingerprint guard (RULE-26) refusing modified input, `prepare_resume`, then runs `run_job` with `job_id`; handles `--deep-verify`; exit codes per `JobResult` state
+- `manager/locks.py`: `JobLock` flock per output folder; `JobLockedError(message, meaning, fix)`; `duplicate_detected()` delegates to `job_exists`
+- `monitoring/sampler.py`: `DiskFullError(message, meaning, fix)`, `estimate_needed_bytes`, `free_bytes`, `assert_disk_fit`
+- tests: `tests/integration/test_resume.py`, `tests/integration/test_diskfull.py`, `tests/integration/test_duplicate.py`
+
+evidence: pytest 186 passed; mypy --strict 0 issues in 62 files; ruff check clean
+
+next: Phase 10 (Fault tolerance) — classifier, counter wiring, retry schedule, watchdog integration, corruption handling per Phases.md.
+
 
 what: completed Phase 7 per the Phase 7 build table:
 - `optimizer/quality.py`: Tier 0 ffprobe validity alias to `verify_clip` (size, WebM/VP9/Opus, resolution, duration within 1-frame tolerance per FR-SPL-08); Tier 1 SSIM/PSNR filter passes with `--quality-sample` sampling; Tier 2 VMAF with clean demotion to SSIM when libvmaf absent (FR-OPT-08..10)
@@ -161,7 +181,7 @@ The done-when criteria for each phase live in Phases.md; this table is the state
 | 6 | Smart size control | not started | |
 | 7 | Quality gates and ladder | not started | |
 | 8 | Persistence | not started | |
-| 9 | Resume and recovery | not started | |
+| 9 | Resume and recovery | done (2026-11-26) | 2026-11-26 |
 | 10 | Fault tolerance | not started | |
 | 11 | Recovery commands | not started | |
 | 12 | Batch, queue, dashboard | not started | |
@@ -178,10 +198,10 @@ Blueprint milestone mapping (for cross-reference with the PRD): M0 is Phase 1; M
 | Field | Value |
 |---|---|
 | Claimed by | (none) |
-| Phase | 8 (Persistence) |
+| Phase | 9 (Resume and recovery) |
 | Files in flight | none |
-| In-flight detail | Phase 8 complete and verified; cleared for Phase 9 |
-| Claimed at | 2026-11-25 |
+| In-flight detail | Phase 9 complete and verified; cleared for Phase 10 |
+| Claimed at | 2026-11-26 |
 
 ## 6. Decisions log
 
