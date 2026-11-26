@@ -1,6 +1,6 @@
 """Database-backed job scheduler and execution loop.
 
-Phase 5 / Phase 8; FR-ENC-05, FR-ENC-07, RULE-22, RULE-30.
+Phase 5 / Phase 8 / Phase 9; FR-ENC-05, FR-ENC-07, FR-RES-04, RULE-22, RULE-30.
 
 Every clip state change commits to SQLite before the corresponding filesystem
 mutation happens (the transaction rule).
@@ -20,12 +20,15 @@ from clipforge.core.config import ClipForgeConfig
 from clipforge.core.constants import (
     TARGET_CLIP_SIZE_BYTES,
     ClipState,
+    ExitCode,
     JobState,
 )
 from clipforge.encoding.builder import build_clip_command
 from clipforge.encoding.progress import ProgressFrame
 from clipforge.encoding.runner import run_encode
 from clipforge.encoding.verify import verify_clip
+from clipforge.manager.locks import JobLock
+from clipforge.monitoring.sampler import assert_disk_fit, free_bytes
 from clipforge.optimizer.budget import (
     calculate_budget,
     default_audio_bitrate_bps,
@@ -53,12 +56,15 @@ from clipforge.storage.repo import (
     append_attempt,
     create_job,
     insert_clip,
+    load_job,
+    load_job_clips,
     set_job_counts,
     set_job_state,
     update_clip_state,
 )
 from clipforge.storage.schema import init_schema
 from clipforge.utils.atomic import atomic_publish
+from clipforge.utils.hashing import fingerprint
 
 
 def _clean_passlogs(tmp_dir: Path, clip_filename: str) -> None:
@@ -104,6 +110,19 @@ class JobResult:
     review_clips: int
 
 
+def _terminal_clip_states() -> frozenset[str]:
+    """Clip states that are terminal and should be skipped on resume (RULE-66)."""
+    return frozenset(
+        {
+            ClipState.COMPLETED.value,
+            ClipState.NEEDS_REVIEW.value,
+            ClipState.FAILED.value,
+            ClipState.FAILED_SIZE.value,
+            ClipState.FAILED_LIMIT.value,
+        }
+    )
+
+
 def run_job(
     plan: JobPlan,
     probe: ProbeData,
@@ -120,6 +139,9 @@ def run_job(
     Every clip state change commits to SQLite before the corresponding
     filesystem mutation. A job killed at any moment leaves a database that
     opens consistently and describes exactly what finished.
+
+    When ``job_id`` is given, the job is resumed: clips already in a terminal
+    state are skipped without re-encoding (RULE-66).
 
     Args:
         plan: Prepared job boundaries and feasibility plan.
@@ -139,8 +161,40 @@ def run_job(
     tmp_dir = output_dir / ".clipforge_tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
+    with JobLock(output_dir):
+        return _run_job_locked(
+            plan=plan,
+            probe=probe,
+            config=config,
+            output_dir=output_dir,
+            db_path=db_path,
+            job_id=job_id,
+            on_clip_start=on_clip_start,
+            on_clip_progress=on_clip_progress,
+            on_clip_done=on_clip_done,
+            tmp_dir=tmp_dir,
+        )
+
+
+def _run_job_locked(
+    plan: JobPlan,
+    probe: ProbeData,
+    config: ClipForgeConfig,
+    output_dir: Path,
+    db_path: Path | None,
+    job_id: int | None,
+    on_clip_start: Callable[[int, int], None] | None,
+    on_clip_progress: Callable[[int, ProgressFrame], None] | None,
+    on_clip_done: Callable[[ClipResult], None] | None,
+    tmp_dir: Path,
+) -> JobResult:
+    """Job body executed while holding the output-folder lock (Phase 9)."""
+
     if db_path is None:
         db_path = config.paths.database
+
+    # Pre-flight disk guard (Phase 9): refuse jobs that cannot fit on disk.
+    assert_disk_fit(output_dir, plan.clip_count, config.output.max_size)
 
     config_snapshot = {
         "processing": config.processing.model_dump(),
@@ -149,6 +203,7 @@ def run_job(
         "quality": config.quality.model_dump(),
         "fault_tolerance": config.fault_tolerance.model_dump(),
         "performance": config.performance.model_dump(),
+        "input_fingerprint": fingerprint(plan.input_path),
     }
 
     # Ensure schema exists before any DB write (RULE-22)
@@ -164,27 +219,106 @@ def run_job(
         job_id = create_job(
             db_path, plan.input_path, output_dir, cast(dict[str, object], config_snapshot)
         )
-
-    set_job_state(db_path, job_id, JobState.PROCESSING)
+        set_job_state(db_path, job_id, JobState.PROCESSING)
+    else:
+        # Resume path: verify the job exists and re-open it for processing.
+        existing_job = load_job(db_path, job_id)
+        if existing_job is None:
+            raise ValueError(f"job {job_id} not found in database")
+        set_job_state(db_path, job_id, JobState.PROCESSING)
 
     clip_results: list[ClipResult] = []
     padding = max(4, len(str(plan.clip_count)))
     job_state = JobState.PROCESSING
     part_path: Path | None = None
+    interrupted_count = 0
+
+    # Load existing clips for resume: skip terminal-state clips (RULE-66).
+    existing_by_index: dict[int, dict[str, object]] = {}
+    existing = load_job_clips(db_path, job_id)
+    existing_by_index = {cast(int, c["index"]): c for c in existing}
+    terminal_states = _terminal_clip_states()
+
+    def _on_interrupt() -> None:
+        nonlocal interrupted_count
+        interrupted_count += 1
+        if interrupted_count >= 2:
+            # Second Ctrl+C: exit immediately, leave whatever is on disk.
+            raise SystemExit(ExitCode.INTERRUPTED.value) from None
+        raise KeyboardInterrupt
 
     try:
         for boundary in plan.boundaries:
+            # Runtime disk guard before each clip (Phase 9): pause with
+            # completed clips intact rather than filling the disk.
+            if free_bytes(output_dir) < config.output.max_size:
+                raise SystemExit(
+                    f"disk full: cannot encode clip {boundary.index + 1}; "
+                    f"completed clips left intact"
+                )
             clip_idx = boundary.index + 1
             if on_clip_start:
                 on_clip_start(clip_idx, plan.clip_count)
+
+            # Resume: skip clips already in a terminal state (RULE-66:
+            # completed clips are untouchable; FAILED stays for Phase 11).
+            if clip_idx in existing_by_index:
+                prior = existing_by_index[clip_idx]
+                prior_state = prior["state"]
+                if prior_state in terminal_states:
+                    clip_results.append(
+                        ClipResult(
+                            index=clip_idx,
+                            start_us=boundary.start_us,
+                            duration_us=boundary.duration_us,
+                            state=ClipState(prior_state),
+                            output_path=(
+                                Path(cast(str, prior["output_path"]))
+                                if prior["output_path"] is not None
+                                else None
+                            ),
+                            size_bytes=cast(int, prior["size_bytes"]),
+                            size_attempts=cast(int, prior["size_attempts"]),
+                            fault_retries=cast(int, prior["fault_retries"]),
+                            total_encodes=cast(int, prior["total_encodes"]),
+                            two_pass=bool(cast(int, prior["two_pass"])),
+                            crf=cast(int, prior["crf"]),
+                            error_message=(
+                                cast(str, prior["error_message"])
+                                if prior["error_message"] is not None
+                                else None
+                            ),
+                            degradation=tuple(cast(list[str], prior["degradation"])),
+                            quality_metric=(
+                                cast(str, prior["quality_metric"])
+                                if prior["quality_metric"] is not None
+                                else None
+                            ),
+                            quality_score=(
+                                cast(float, prior["quality_score"])
+                                if prior["quality_score"] is not None
+                                else None
+                            ),
+                            quality_threshold=(
+                                cast(float, prior["quality_threshold"])
+                                if prior["quality_threshold"] is not None
+                                else None
+                            ),
+                        )
+                    )
+                    continue
 
             clip_filename = f"clip_{clip_idx:0{padding}d}.webm"
             part_path = tmp_dir / f"{clip_filename}.part"
             final_path = output_dir / clip_filename
             passlog_prefix = tmp_dir / f"{clip_filename}_passlog"
 
-            # Insert clip row as PENDING (DB commit before any filesystem work)
-            insert_clip(db_path, job_id, clip_idx, boundary.start_us, boundary.duration_us)
+            # Insert clip row as PENDING (DB commit before any filesystem work).
+            # On resume the row may already exist (left PENDING by recovery);
+            # only insert when it is truly new.
+            existing_clip = existing_by_index.get(clip_idx)
+            if existing_clip is None:
+                insert_clip(db_path, job_id, clip_idx, boundary.start_us, boundary.duration_us)
 
             # Calculate initial budget and starting CRF (FR-OPT-02, 03, 05)
             audio_ch = (
@@ -632,6 +766,11 @@ def run_job(
                 on_clip_done(result)
 
     except KeyboardInterrupt:
+        # First Ctrl+C: clean up the active encode and mark INTERRUPTED.
+        # A second Ctrl+C during this cleanup exits immediately (Phase 9).
+        interrupted_count += 1
+        if interrupted_count >= 2:
+            raise SystemExit(ExitCode.INTERRUPTED.value) from None
         if part_path and part_path.exists():
             part_path.unlink(missing_ok=True)
         if tmp_dir.exists():
