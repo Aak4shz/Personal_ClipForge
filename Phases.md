@@ -6,7 +6,7 @@
 | **Status** | Active build plan |
 | **Owner** | Aakash |
 | **Sources** | Master Blueprint v2.0 (roadmap M0-M9), [PRD.md](PRD.md), [ARCHITECTURE.md](ARCHITECTURE.md), [Rules.md](Rules.md) |
-| **Last updated** | 2026-11-13 |
+| **Last updated** | 2026-11-26 |
 
 This document turns the blueprint's ten milestones into fifteen phases, each small enough to finish in one focused stretch of work and each leaving the tool able to do something it could not do before. The PRD's milestone table stays the contract; this file is the working schedule that fills it.
 
@@ -93,7 +93,7 @@ The chain is linear on purpose. One exception is allowed: Phase 13 (performance 
 | 6 | Smart size control | M3 (first half) | medium | Win the fight for 4 MiB on hard clips |
 | 7 | Quality gates and ladder | M3 (second half) | medium | Refuse to call a bad clip good |
 | 8 | Persistence | M4 (first half) | heavy | Survive anything and remember it |
-| 9 | Resume and recovery | M4 (second half) | medium | Continue exactly where a crash happened |
+| 9 | Resume and recovery | M4 (second half) | medium | Continue exactly where a crash happened, with locks, disk guards, fingerprint refusal |
 | 10 | Fault tolerance | M5 (first half) | medium | Absorb failures without spreading them |
 | 11 | Recovery commands | M5 (second half) | medium | Repair a damaged job from the command line |
 | 12 | Batch, queue, dashboard | M6 | medium-heavy | Process a folder while you watch |
@@ -574,7 +574,7 @@ Keep a running log at the bottom of this file: phase number, date, what passed, 
 
 ---
 
-**Current status:** Phase 7 done 2026-11-25. Next action: Phase 8, Persistence.
+**Current status:** Phase 9 done 2026-11-26. Next action: Phase 10, Fault tolerance.
 
 | Phase | Date | Result | Notes |
 |---|---|---|---|
@@ -586,7 +586,7 @@ Keep a running log at the bottom of this file: phase number, date, what passed, 
 | 6 | 2026-11-22 | done | Smart size control: CQ mode with starting CRF (resolution x bpp class, capped at crf_max), size loop with two-pass rate control fallback after 2 oversize results (pass 1 analysis + pass 2 encode counted against 8-encode cap), under-use hook, passlog cleanup; 8 new tests (138 total passing); mypy strict, ruff clean |
 | 7 | 2026-11-25 | done | Quality gates and ladder: Tier 0 verification (WebM/VP9/Opus, resolution, duration within 1-frame tolerance), Tier 1 SSIM/PSNR filter passes with sampling (--quality-sample), Tier 2 VMAF with fallback, degradation ladder (--on-oversize fail/fps/downscale/both) halving >=48 fps or downscaling preserving aspect, under-use recovery at crf-4, NEEDS_REVIEW marking without file deletion (RULE-45/74) with COMPLETED_WITH_ISSUES exit 1; 26 new tests (164 total passing); mypy strict, ruff clean |
 | 8 | 2026-11-25 | done | Persistence: SQLite WAL storage (db.py), schema versioning via PRAGMA user_version (schema.py), repository layer (repo.py) with jobs/clips/attempts/events tables, state machine validation in core/constants.py, scheduler rewrite to database-backed run_job with RULE-22 transaction rule (DB commit before filesystem mutation), manifest.json written atomically after every clip, fingerprint utils, init_schema migration path, crash recovery via reset_in_flight_clips; 9 new persistence integration tests (173 total passing); mypy strict, ruff clean |
-| 9 | - | not started | |
+| 9 | 2026-11-26 | done | Resume and recovery: graceful interrupt (first Ctrl+C cleans active encode, second exits 130), resume command (cli/commands/resume.py) and recovery module (manager/recovery.py) — load job, fingerprint guard (RULE-26), quick-verify completed clips, reset missing/in-flight clips to PENDING (completed stay untouched per RULE-66), FAILED clips stay out; flock per output folder in manager/locks.py; duplicate detection via same input+output+config; pre-flight disk guard (monitoring/sampler.py assert_disk_fit) plus runtime free_bytes check before each clip; --deep-verify option honored; 20 new integration tests across test_resume.py, test_diskfull.py, test_duplicate.py (186 total passing); mypy strict, ruff clean |
 | 10 | - | not started | |
 | 11 | - | not started | |
 | 12 | - | not started | |
